@@ -49,7 +49,7 @@ func (m *Manager) CreateShortLink(
 	code, err := GenerationUniqueCode(m)
 	if err != nil {
 		log.Println("Не удалось сгенерировать код", err)
-		helper.WriteJson()
+		helper.WriteJson(w, map[string]string{"error":"Не удалось сгенерировать код"}, http.StatusBadRequest)
 		return
 	}
 
@@ -76,7 +76,35 @@ func (m *Manager) GetShrotLink (w http.ResponseWriter, r *http.Request) {
 		URL  string   `json:"url"`
 	}
 
+	err := json.NewDecoder(r.Body).Decode(&request)
+	if err != nil {
+		log.Println("Не удалось прочитать тело запроса!")
+		return
+	}
 
+	for i := range m.links {
+		if m.links[i].OriginalURL == request.URL{
+			m.Redirect(w,r)
+		}
+	}
+
+
+ 
+}
+
+func (m *Manager) Redirect(w http.ResponseWriter, r *http.Request){
+
+	code := r.PathValue("code")
+
+	link, ok := m.links[code]
+	if !ok {
+		helper.WriteJson(w,map[string]string{"error":"Код не найден!"}, http.StatusNotFound)
+		return
+	}
+
+	link.Clicks++
+
+	http.Redirect(w,r,link.OriginalURL,http.StatusFound)
 }
 
 
