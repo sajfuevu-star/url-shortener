@@ -96,15 +96,21 @@ func (m *Manager) Redirect(w http.ResponseWriter, r *http.Request){
 
 	code := r.PathValue("code")
 
+	m.mu.Lock()
+
 	link, ok := m.links[code]
 	if !ok {
+		m.mu.Unlock()
+
 		helper.WriteJson(w,map[string]string{"error":"Код не найден!"}, http.StatusNotFound)
 		return
 	}
 
 	link.Clicks++
 
-	http.Redirect(w,r,link.OriginalURL,http.StatusFound)
+	originalURL := link.OriginalURL
+
+	http.Redirect(w,r,originalURL,http.StatusFound)
 }
 
 
