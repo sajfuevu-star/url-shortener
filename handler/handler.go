@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"url/helper"
 	"url/link"
@@ -28,7 +29,8 @@ func (m *Manager) CreateShortLink(
 ) {
 
 	var request struct {
-		URL string `json:"url"`
+		URL    string `json:"url"`
+		Alias  string `json:"alias"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -37,30 +39,57 @@ func (m *Manager) CreateShortLink(
 		return
 	}
 
-	url, err := helper.ValidateURL(request.URL)
+	validURL, err := helper.ValidateURL(request.URL)
 	if err != nil {
 		log.Println("Не корректный URL", err)
 		helper.WriteJson(w, map[string]string{"error": "Не корректный URL"}, http.StatusBadRequest)
 		return
 	}
 
-	request.URL = url
+	request.URL = validURL
+	var code string
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
-	code, err := GenerationUniqueCode(m)
-	if err != nil {
-		log.Println("Не удалось сгенерировать код", err)
-		helper.WriteJson(w, map[string]string{"error": "Не удалось сгенерировать код"}, http.StatusInternalServerError)
-		return
+	if request.Alias != "" {
+		alias, err := helper.ValidateAlias(request.Alias)
+		if err != nil {
+			 m.mu.Unlock()
+
+			 log.Println("Не корректный alias:",err)
+
+			 helper.WriteJson(w,map[string]string{"error":err.Error()}, http.StatusBadRequest)
+			 return
+		}
+		_,exists := m.links[alias]
+		if exists {
+			m.mu.Unlock()
+			
+			log.Println("Alias уже занят")
+
+			helper.WriteJson(w, map[string]string{"error":"alias уже занят"}, http.StatusConflict)
+			return
+		}
+		code = alias
+	}else {
+	    generateCode, err := GenerationUniqueCode(m)
+	    if err != nil {
+		     m.mu.Unlock()
+		     log.Println("Не удалось сгенерировать код", err)
+		     helper.WriteJson(w, map[string]string{"error": "Не удалось сгенерировать код"}, http.StatusInternalServerError)
+		 return
 	}
 
-	link := &link.Link{
-		Code:        code,
-		OriginalURL: request.URL,
+	code = generateCode
+
+}
+    newLink := &link.Link{
+		 Code:        code,
+		 OriginalURL: request.URL,
 	}
 
-	m.links[code] = link
+	m.links[code] = newLink
+
+	m.mu.Unlock()
 
 	response := map[string]string{
 		"short_url": "http://localhost:8080/r/" + code,
@@ -68,7 +97,9 @@ func (m *Manager) CreateShortLink(
 
 	helper.WriteJson(w, response, http.StatusCreated)
 
-}
+	}
+
+	
 
 func (m *Manager) Redirect(w http.ResponseWriter, r *http.Request) {
 
@@ -127,3 +158,6 @@ func (m *Manager) GetStats(w http.ResponseWriter, r *http.Request) {
 	helper.WriteJson(w, stats, http.StatusOK)
 
 }
+
+
+

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"unicode"
 )
 
 const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -63,4 +64,28 @@ func ValidateURL(rawURL string) (string, error) {
 	}
 
 	return rawURL, nil
+}
+
+
+func ValidateAlias(alias string) (string, error) {
+	alias = strings.TrimSpace(alias)
+
+	if len(alias) < 3 {
+		return "", fmt.Errorf("alias должен быть минимум 3 символа")
+	}
+
+	if len(alias) > 30 {
+		return "", fmt.Errorf("alias должен быть не более 30 символов")
+	}
+
+	for _, char := range alias {
+		if !unicode.IsLetter(char) &&
+		    !unicode.IsDigit(char) &&
+			char != '-' &&
+			char != '_' {
+				return "", fmt.Errorf("alias содердит недопустимые символы")
+			}
+	}
+	
+	return alias, nil
 }
