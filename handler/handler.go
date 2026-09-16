@@ -29,8 +29,9 @@ func (m *Manager) CreateShortLink(
 ) {
 
 	var request struct {
-		URL    string `json:"url"`
-		Alias  string `json:"alias"`
+		URL   string `json:"url"`
+		Alias string `json:"alias"`
+		TTL   string `json:"ttl"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -46,6 +47,32 @@ func (m *Manager) CreateShortLink(
 		return
 	}
 
+	var expiresAt *time.Time
+
+	if request.TTL != "" {
+		ttl, err := time.ParseDuration(request.TTL)
+		if err != nil {
+			log.Println("Не корректный TTL")
+			helper.WriteJson(w, map[string]string{
+				"error": "Не корректный TTL",
+			}, http.StatusBadRequest)
+			return
+		}
+
+		if ttl <= 0 {
+			helper.WriteJson(w,
+				map[string]string{
+					"error": "TTL должен быть больше нуля",
+				}, http.StatusBadRequest)
+
+			return
+		}
+
+		expiretion := time.Now().Add(ttl)
+		expiresAt = &expiretion
+
+	}
+
 	request.URL = validURL
 	var code string
 	m.mu.Lock()
@@ -53,38 +80,40 @@ func (m *Manager) CreateShortLink(
 	if request.Alias != "" {
 		alias, err := helper.ValidateAlias(request.Alias)
 		if err != nil {
-			 m.mu.Unlock()
+			m.mu.Unlock()
 
-			 log.Println("Не корректный alias:",err)
+			log.Println("Не корректный alias:", err)
 
-			 helper.WriteJson(w,map[string]string{"error":err.Error()}, http.StatusBadRequest)
-			 return
+			helper.WriteJson(w, map[string]string{"error": err.Error()}, http.StatusBadRequest)
+			return
 		}
-		_,exists := m.links[alias]
+		_, exists := m.links[alias]
 		if exists {
 			m.mu.Unlock()
-			
+
 			log.Println("Alias уже занят")
 
-			helper.WriteJson(w, map[string]string{"error":"alias уже занят"}, http.StatusConflict)
+			helper.WriteJson(w, map[string]string{"error": "alias уже занят"}, http.StatusConflict)
 			return
 		}
 		code = alias
-	}else {
-	    generateCode, err := GenerationUniqueCode(m)
-	    if err != nil {
-		     m.mu.Unlock()
-		     log.Println("Не удалось сгенерировать код", err)
-		     helper.WriteJson(w, map[string]string{"error": "Не удалось сгенерировать код"}, http.StatusInternalServerError)
-		 return
+	} else {
+		generateCode, err := GenerationUniqueCode(m)
+		if err != nil {
+			m.mu.Unlock()
+			log.Println("Не удалось сгенерировать код", err)
+			helper.WriteJson(w, map[string]string{"error": "Не удалось сгенерировать код"}, http.StatusInternalServerError)
+			return
+		}
+
+		code = generateCode
+
 	}
-
-	code = generateCode
-
-}
-    newLink := &link.Link{
-		 Code:        code,
-		 OriginalURL: request.URL,
+	newLink := &link.Link{
+		Code:        code,
+		OriginalURL: request.URL,
+		CreatedAt:   time.Now(),
+		ExpiresAt:   expiresAt,
 	}
 
 	m.links[code] = newLink
@@ -97,9 +126,7 @@ func (m *Manager) CreateShortLink(
 
 	helper.WriteJson(w, response, http.StatusCreated)
 
-	}
-
-	
+}
 
 func (m *Manager) Redirect(w http.ResponseWriter, r *http.Request) {
 
@@ -112,6 +139,16 @@ func (m *Manager) Redirect(w http.ResponseWriter, r *http.Request) {
 		m.mu.Unlock()
 
 		helper.WriteJson(w, map[string]string{"error": "Код не найден!"}, http.StatusNotFound)
+		return
+	}
+
+	if link.ExpiresAt != nil &&
+		time.Now().After(*link.ExpiresAt) {
+
+		m.mu.Unlock()
+
+		helper.WriteJson(w, map[string]string{"error": "Срок дейсвтия ссылки истек"}, http.StatusGone)
+
 		return
 	}
 
@@ -159,5 +196,29 @@ func (m *Manager) GetStats(w http.ResponseWriter, r *http.Request) {
 
 }
 
+func (m *Manager) DeleteLink(w http.ResponseWriter, r http.Request) {
 
+	code := r.PathValue("code")
 
+	m.mu.Lock()
+
+	_, exists := m.links[code]
+	if !exists {
+		m.mu.Unlock()
+
+		helper.WriteJson(w,
+			map[string]string{"error": "Сылка не найдена"},
+			http.StatusBadRequest)
+
+		return
+	}
+
+	delete(m.links, code)
+
+	m.mu.Unlock()
+
+	helper.WriteJson(w,
+		map[string]string{"error": "Ссылка удалена"},
+		http.StatusNoContent)
+
+}
