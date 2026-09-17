@@ -178,10 +178,10 @@ func GenerationUniqueCode(m *Manager) (string, error) {
 func (m *Manager) GetStats(w http.ResponseWriter, r *http.Request) {
 	code := r.PathValue("code")
 
-	m.mu.Lock()
+	m.mu.RLock()
 	statlink, ok := m.links[code]
 	if !ok {
-		m.mu.Unlock()
+		m.mu.RUnlock()
 
 		log.Println("Не найден код")
 		helper.WriteJson(w, map[string]string{"error": "Не найден код"}, http.StatusNotFound)
@@ -190,13 +190,13 @@ func (m *Manager) GetStats(w http.ResponseWriter, r *http.Request) {
 
 	stats := *statlink
 
-	m.mu.Unlock()
+	m.mu.RUnlock()
 
 	helper.WriteJson(w, stats, http.StatusOK)
 
 }
 
-func (m *Manager) DeleteLink(w http.ResponseWriter, r http.Request) {
+func (m *Manager) DeleteLink(w http.ResponseWriter, r *http.Request) {
 
 	code := r.PathValue("code")
 
@@ -208,7 +208,7 @@ func (m *Manager) DeleteLink(w http.ResponseWriter, r http.Request) {
 
 		helper.WriteJson(w,
 			map[string]string{"error": "Сылка не найдена"},
-			http.StatusBadRequest)
+			http.StatusNotFound)
 
 		return
 	}
@@ -219,6 +219,20 @@ func (m *Manager) DeleteLink(w http.ResponseWriter, r http.Request) {
 
 	helper.WriteJson(w,
 		map[string]string{"error": "Ссылка удалена"},
-		http.StatusNoContent)
+		http.StatusOK)
 
+}
+
+func (m *Manager) GetAllLinks(w http.ResponseWriter, r *http.Request) {
+	m.mu.Lock()
+
+	links := make([]link.Link, 0, len(m.links))
+
+	for _, item := range m.links {
+		links = append(links, *item)
+	}
+
+	m.mu.Unlock()
+
+	helper.WriteJson(w, links, http.StatusOK)
 }
