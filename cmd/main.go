@@ -1,13 +1,29 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
+	"os"
 
 	"url/handler"
+	"url/repository"
 )
 
 func main() {
+	ctx := context.Background()
+
+	dsn := os.Getenv("DATABASE_URL")
+
+	db, err := repository.NewPostgres(ctx, dsn)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	defer db.Close()
+
+	log.Println("PostgreSQL подключен")
+
 	mux := http.NewServeMux()
 
 	manager := handler.NewManager()
