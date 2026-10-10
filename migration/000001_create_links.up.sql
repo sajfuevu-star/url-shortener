@@ -1,0 +1,8 @@
+CREATE TABLE links (
+	code TEXT UNIQUE NOT NULL,
+	original_url TEXT UNIQUE NOT NULL,
+	clicks BIGINT NOT NULL DEFAULT 0,
+	alias TEXT UNIQUE,
+	created_at TIMESTAMPTZ NOT NULL DAFULT NOW(),
+	expires_at TIMESTAMPTZ
+);

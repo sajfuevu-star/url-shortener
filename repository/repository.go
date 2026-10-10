@@ -1,9 +1,11 @@
-package database
-
+package repository
 
 import (
 	"context"
 	"fmt"
+	"log"
+
+	"url/link"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -12,33 +14,23 @@ type LinkRepository struct {
 	db *pgxpool.Pool
 }
 
-CREATE TABLE links (
-	id BIGSERIAL PRIMARY KEY,
-	code TEXT UNIQUE NOT NULL,
-	original_url TEXT UNIQUE NOT NULL,
-	clicks BIGINT NOT NULL DEFAULT 0,
-	created_at TIMESTAMPTZ NOT NULL DAFULT NOW(),
-	expires_at TIMESTAMPTZ
-);
-
-
 func NewPostgres(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		retunr nil, fmt.Errorf("Создайте пулл соединений: %w", err)
+		return nil, fmt.Errorf("Создайте пулл соединений: %w", err)
 	}
 
 	return pool, nil
 }
 
-func NewLinkRepository(db *pgxpool.Pool) *Linkrepository {
+func NewLinkRepository(db *pgxpool.Pool) *LinkRepository {
 	return &LinkRepository{
-		db : db,
+		db: db,
 	}
 }
 
-func (r *Linkrepository) Create(ctx context.Context, link *Link,) error {
+func (r *LinkRepository) Create(ctx context.Context, link *link.Link) error {
 
 	query := `
 	    INSERT INTO links (
@@ -47,7 +39,7 @@ func (r *Linkrepository) Create(ctx context.Context, link *Link,) error {
 		   expires_at
 		)
 		VALUES ($1, $2, $3)
-		RETURNING id, created_at
+		RETURNING created_at
 	`
 
 	err := r.db.QueryRow(
@@ -57,17 +49,15 @@ func (r *Linkrepository) Create(ctx context.Context, link *Link,) error {
 		link.OriginalURL,
 		link.ExpiresAt,
 	).Scan(
-		&link.ID,
 		&link.CreatedAt,
 	)
 
 	return err
 }
 
-func (r *LinkRepository) GetByCode(ctx *pgxpool.Pool, code string) (*Link, error) {
+func (r *LinkRepository) GetByCode(ctx context.Context, code string) (*link.Link, error) {
 	query := `
 	    SELECT
-		     id,
 		     code,
 		     original_url,
 		     clicks,
@@ -77,20 +67,60 @@ func (r *LinkRepository) GetByCode(ctx *pgxpool.Pool, code string) (*Link, error
 		WHERE code = $1
 	`
 
-	var link *Link
+	var newLink link.Link
 
-	err := r.db.QueryRow(ctx, query, code,).Scan(
-		&link.ID,
-		&link.Code,
-		&link.OriginalURL,
-		&link.Clicks,
-		&link.CreatedAt,
-		&link.expiresAt,
+	err := r.db.QueryRow(ctx, query, code).Scan(
+		&newLink.Code,
+		&newLink.OriginalURL,
+		&newLink.Clicks,
+		&newLink.CreatedAt,
+		&newLink.ExpiresAt,
 	)
 
 	if err != nil {
-		retunr nil, err
+		return nil, err
 	}
 
-	return &link, nil
+	return &newLink, nil
+}
+
+func (r *LinkRepository) DeleteLinkByCode(ctx context.Context, code string) error {
+
+	query := `
+	    DELETE FROM links
+		WHERE code = $1
+	`
+
+	_, err := r.db.Exec(
+		ctx,
+		query,
+		code,
+	)
+	if err != nil {
+		log.Println("Не удалось удалить строку:", err)
+		return err
+	}
+
+	return nil
+}
+
+func (r LinkRepository) UpdateLink(ctx context.Context, code string) error {
+
+	query := `
+	    UPDATE 
+		clicks = clicks + 1
+		FROM links
+		WHERE code = $1
+	`
+
+	_, err := r.db.Exec(
+		ctx,
+		query,
+		code,
+	)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

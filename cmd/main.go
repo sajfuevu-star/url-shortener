@@ -22,11 +22,13 @@ func main() {
 
 	defer db.Close()
 
+	repo := repository.NewLinkRepository(db)
+
 	log.Println("PostgreSQL подключен")
 
 	mux := http.NewServeMux()
 
-	manager := handler.NewManager()
+	manager := handler.NewManager(repo)
 
 	mux.HandleFunc("POST /shorten", manager.CreateShortLink)
 	mux.HandleFunc("GET /r/{code}", manager.Redirect)

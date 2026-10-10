@@ -10,15 +10,18 @@ import (
 
 	"url/helper"
 	"url/link"
+	"url/repository"
 )
 
 type Manager struct {
+	repo  repository.LinkRepository
 	mu    sync.RWMutex
 	links map[string]*link.Link
 }
 
-func NewManager() *Manager {
+func NewManager(repository *repository.LinkRepository) *Manager {
 	return &Manager{
+		repo:  *repository,
 		links: make(map[string]*link.Link),
 	}
 }
@@ -120,6 +123,14 @@ func (m *Manager) CreateShortLink(
 
 	m.mu.Unlock()
 
+	err = m.repo.Create(r.Context(), newLink)
+	if err != nil {
+		log.Println(err)
+		helper.WriteJson(w, map[string]string{
+			"error": "не удалось добавить ссылку в базу данных",
+		}, http.StatusBadRequest)
+	}
+
 	response := map[string]string{
 		"short_url": "http://localhost:8080/r/" + code,
 	}
@@ -137,9 +148,12 @@ func (m *Manager) Redirect(w http.ResponseWriter, r *http.Request) {
 	link, ok := m.links[code]
 	if !ok {
 		m.mu.Unlock()
-
-		helper.WriteJson(w, map[string]string{"error": "Код не найден!"}, http.StatusNotFound)
-		return
+		newLink, err := m.repo.GetByCode(r.Context(), code)
+		if err != nil {
+			helper.WriteJson(w, map[string]string{"error": "Код не найден!"}, http.StatusNotFound)
+			return
+		}
+		link = newLink
 	}
 
 	if link.ExpiresAt != nil &&
@@ -153,6 +167,11 @@ func (m *Manager) Redirect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	link.Clicks++
+
+	err := m.repo.UpdateLink(r.Context(), code)
+	if err != nil {
+		log.Println("Не удалось обновить ссылку:", err)
+	}
 
 	originalURL := link.OriginalURL
 	m.mu.Unlock()
