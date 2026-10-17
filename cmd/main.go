@@ -19,6 +19,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if err := db.Ping(ctx); err != nil {
+		log.Fatal(err)
+	}
 
 	defer db.Close()
 
@@ -34,6 +37,7 @@ func main() {
 	mux.HandleFunc("GET /r/{code}", manager.Redirect)
 	mux.HandleFunc("DELETE /links/{code}", manager.DeleteLink)
 	mux.HandleFunc("GET /links", manager.GetAllLinks)
+	mux.HandleFunc("GET /stats/{code}", manager.GetStats)
 
 	server := &http.Server{
 		Addr:    ":8080",

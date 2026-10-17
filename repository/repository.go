@@ -107,10 +107,9 @@ func (r *LinkRepository) DeleteLinkByCode(ctx context.Context, code string) erro
 func (r LinkRepository) UpdateLink(ctx context.Context, code string) error {
 
 	query := `
-	    UPDATE 
-		clicks = clicks + 1
-		FROM links
-		WHERE code = $1
+	    UPDATE links
+		SET clicks = clicks + 1
+		WHERE code = $1;
 	`
 
 	_, err := r.db.Exec(
@@ -123,4 +122,52 @@ func (r LinkRepository) UpdateLink(ctx context.Context, code string) error {
 	}
 
 	return nil
+}
+
+func (r *LinkRepository) GetAllLInks(ctx context.Context) ([]link.Link, error) {
+
+	query := `
+	SELECT 
+	    code,
+		clicks,
+		original_url,
+		COALESCE(alias, '') AS alias,
+		created_at,
+		expires_at
+	FROM links
+	`
+
+	rows, err := r.db.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	defer rows.Close()
+
+	var links []link.Link
+
+	for rows.Next() {
+
+		var link link.Link
+
+		err := rows.Scan(
+			&link.Code,
+			&link.Clicks,
+			&link.OriginalURL,
+			&link.Alias,
+			&link.CreatedAt,
+			&link.ExpiresAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		links = append(links, link)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return links, nil
 }

@@ -119,17 +119,19 @@ func (m *Manager) CreateShortLink(
 		ExpiresAt:   expiresAt,
 	}
 
-	m.links[code] = newLink
-
-	m.mu.Unlock()
-
 	err = m.repo.Create(r.Context(), newLink)
 	if err != nil {
+		m.mu.Unlock()
 		log.Println(err)
 		helper.WriteJson(w, map[string]string{
 			"error": "не удалось добавить ссылку в базу данных",
 		}, http.StatusBadRequest)
+		return
 	}
+
+	m.links[code] = newLink
+
+	m.mu.Unlock()
 
 	response := map[string]string{
 		"short_url": "http://localhost:8080/r/" + code,
@@ -147,9 +149,9 @@ func (m *Manager) Redirect(w http.ResponseWriter, r *http.Request) {
 
 	link, ok := m.links[code]
 	if !ok {
-		m.mu.Unlock()
 		newLink, err := m.repo.GetByCode(r.Context(), code)
 		if err != nil {
+			m.mu.Unlock()
 			helper.WriteJson(w, map[string]string{"error": "Код не найден!"}, http.StatusNotFound)
 			return
 		}
@@ -202,6 +204,11 @@ func (m *Manager) GetStats(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		m.mu.RUnlock()
 
+		stats, err := m.repo.GetByCode(r.Context(), code)
+		if err == nil {
+			helper.WriteJson(w, stats, http.StatusOK)
+			return
+		}
 		log.Println("Не найден код")
 		helper.WriteJson(w, map[string]string{"error": "Не найден код"}, http.StatusNotFound)
 		return
@@ -225,6 +232,12 @@ func (m *Manager) DeleteLink(w http.ResponseWriter, r *http.Request) {
 	if !exists {
 		m.mu.Unlock()
 
+		err := m.repo.DeleteLinkByCode(r.Context(), code)
+		if err == nil {
+			helper.WriteJson(w,
+				map[string]string{"error": "Ссылка удалена"},
+				http.StatusOK)
+		}
 		helper.WriteJson(w,
 			map[string]string{"error": "Сылка не найдена"},
 			http.StatusNotFound)
@@ -243,15 +256,13 @@ func (m *Manager) DeleteLink(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Manager) GetAllLinks(w http.ResponseWriter, r *http.Request) {
-	m.mu.Lock()
 
-	links := make([]link.Link, 0, len(m.links))
-
-	for _, item := range m.links {
-		links = append(links, *item)
+	links, err := m.repo.GetAllLInks(r.Context())
+	if err != nil {
+		log.Println("Ошибка:", err)
+		helper.WriteJson(w, map[string]string{"error": "Не удалось пполучить ссылки"}, http.StatusBadRequest)
+		return
 	}
-
-	m.mu.Unlock()
 
 	helper.WriteJson(w, links, http.StatusOK)
 }
