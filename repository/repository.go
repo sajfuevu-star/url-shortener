@@ -2,13 +2,18 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log"
 
 	"url/link"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+var ErrNotFound = errors.New("link not found")
+var ErrCodeTaken = errors.New("code already taken")
+var ErrAliasTaken = errors.New("alias already taken")
 
 type LinkRepository struct {
 	db *pgxpool.Pool
@@ -51,8 +56,19 @@ func (r *LinkRepository) Create(ctx context.Context, link *link.Link) error {
 	).Scan(
 		&link.CreatedAt,
 	)
+	if err != nil {
+		var pgErr *pgconn.PgError
 
-	return err
+		if errors.As(err, &pgErr) {
+			if pgErr.Code == "23505" && pgErr.ConstraintName == "links_code_key" {
+				return ErrCodeTaken
+			}
+		}
+
+		return fmt.Errorf("Create link error: %w", err)
+	}
+
+	return nil
 }
 
 func (r *LinkRepository) GetByCode(ctx context.Context, code string) (*link.Link, error) {
@@ -78,7 +94,7 @@ func (r *LinkRepository) GetByCode(ctx context.Context, code string) (*link.Link
 	)
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Get link error: %w", err)
 	}
 
 	return &newLink, nil
@@ -91,14 +107,18 @@ func (r *LinkRepository) DeleteLinkByCode(ctx context.Context, code string) erro
 		WHERE code = $1
 	`
 
-	_, err := r.db.Exec(
+	result, err := r.db.Exec(
 		ctx,
 		query,
 		code,
 	)
 	if err != nil {
-		log.Println("Не удалось удалить строку:", err)
-		return err
+		return fmt.Errorf("delete link: %w", err)
+	}
+
+	count := result.RowsAffected()
+	if count == 0 {
+		return ErrNotFound
 	}
 
 	return nil
@@ -112,13 +132,17 @@ func (r LinkRepository) UpdateLink(ctx context.Context, code string) error {
 		WHERE code = $1;
 	`
 
-	_, err := r.db.Exec(
+	result, err := r.db.Exec(
 		ctx,
 		query,
 		code,
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("update link %s: %w", code, err)
+	}
+
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("update link %s: %w", code, ErrNotFound)
 	}
 
 	return nil
@@ -170,4 +194,32 @@ func (r *LinkRepository) GetAllLInks(ctx context.Context) ([]link.Link, error) {
 	}
 
 	return links, nil
+}
+
+func (r *LinkRepository) GetAndIncrement(ctx context.Context, code string) (*link.Link, error) {
+
+	query := `
+	UPDATE links
+	SET clicks = clicks + 1
+	WHERE code = $1
+	RETURNING code, original_url, expires_at;
+	`
+
+	var newLink link.Link
+
+	err := r.db.QueryRow(
+		ctx,
+		query,
+		code,
+	).Scan(
+		&newLink.Code,
+		&newLink.OriginalURL,
+		&newLink.ExpiresAt,
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("error %s: %w", code, err)
+	}
+
+	return &newLink, nil
 }

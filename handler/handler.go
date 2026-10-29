@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"url/helper"
 	"url/link"
 	"url/repository"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type Manager struct {
@@ -121,11 +124,84 @@ func (m *Manager) CreateShortLink(
 
 	err = m.repo.Create(r.Context(), newLink)
 	if err != nil {
+
+		if errors.Is(err, repository.ErrCodeTaken) {
+
+			if request.Alias != "" {
+				m.mu.Unlock()
+
+				helper.WriteJson(w,
+					map[string]string{
+						"error": "Алиас уже занят",
+					},
+					http.StatusConflict)
+				return
+			}
+
+			for attempt := 0; attempt < 3; attempt++ {
+
+				code, err := GenerationUniqueCode(m)
+
+				if err != nil {
+
+					m.mu.Unlock()
+
+					log.Println(err)
+
+					helper.WriteJson(w,
+						map[string]string{
+							"error": "Не удалось сгенерировать код",
+						}, http.StatusInternalServerError)
+
+					return
+				}
+
+				newLink.Code = code
+
+				err = m.repo.Create(r.Context(), newLink)
+				if err != nil {
+					if errors.Is(err, repository.ErrCodeTaken) {
+						continue
+					}
+
+					log.Println("Не удалось создать ссылку:", err)
+					m.mu.Unlock()
+
+					helper.WriteJson(w, map[string]string{
+						"error": "не удалось добавить ссылку в базу данных"},
+						http.StatusInternalServerError)
+
+					return
+				}
+
+				m.links[code] = newLink
+
+				response := map[string]string{
+					"short_url": "http://localhost:8080/r/" + code,
+				}
+
+				helper.WriteJson(w, response, http.StatusCreated)
+
+				m.mu.Unlock()
+				return
+			}
+			helper.WriteJson(w,
+				map[string]string{"error": "Не удалось создать короткую ссылку"},
+				http.StatusInternalServerError)
+
+			m.mu.Unlock()
+			return
+
+		}
+
+		log.Println("Не удалось создать ссылку:", err)
+
 		m.mu.Unlock()
-		log.Println(err)
+
 		helper.WriteJson(w, map[string]string{
-			"error": "не удалось добавить ссылку в базу данных",
-		}, http.StatusBadRequest)
+			"error": "не удалось добавить ссылку в базу данных"},
+			http.StatusInternalServerError)
+
 		return
 	}
 
@@ -145,38 +221,38 @@ func (m *Manager) Redirect(w http.ResponseWriter, r *http.Request) {
 
 	code := r.PathValue("code")
 
-	m.mu.Lock()
+	newLink, err := m.repo.GetAndIncrement(r.Context(), code)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
 
-	link, ok := m.links[code]
-	if !ok {
-		newLink, err := m.repo.GetByCode(r.Context(), code)
-		if err != nil {
-			m.mu.Unlock()
-			helper.WriteJson(w, map[string]string{"error": "Код не найден!"}, http.StatusNotFound)
+			helper.WriteJson(w,
+				map[string]string{"error": "Ссылка не найдена"},
+				http.StatusNotFound)
+
 			return
+
 		}
-		link = newLink
-	}
 
-	if link.ExpiresAt != nil &&
-		time.Now().After(*link.ExpiresAt) {
+		log.Printf("Не удалось получить ссылку с кодом %q: %v", code, err)
 
-		m.mu.Unlock()
-
-		helper.WriteJson(w, map[string]string{"error": "Срок дейсвтия ссылки истек"}, http.StatusGone)
+		helper.WriteJson(w,
+			map[string]string{"error": "Не удалось получить ссылку"},
+			http.StatusInternalServerError)
 
 		return
 	}
 
-	link.Clicks++
+	if newLink.ExpiresAt != nil &&
+		time.Now().After(*newLink.ExpiresAt) {
 
-	err := m.repo.UpdateLink(r.Context(), code)
-	if err != nil {
-		log.Println("Не удалось обновить ссылку:", err)
+		helper.WriteJson(w,
+			map[string]string{"error": "Срок дейсвтия ссылки истек"},
+			http.StatusGone)
+
+		return
 	}
 
-	originalURL := link.OriginalURL
-	m.mu.Unlock()
+	originalURL := newLink.OriginalURL
 
 	http.Redirect(w, r, originalURL, http.StatusFound)
 }
@@ -226,33 +302,23 @@ func (m *Manager) DeleteLink(w http.ResponseWriter, r *http.Request) {
 
 	code := r.PathValue("code")
 
-	m.mu.Lock()
-
-	_, exists := m.links[code]
-	if !exists {
-		m.mu.Unlock()
-
-		err := m.repo.DeleteLinkByCode(r.Context(), code)
-		if err == nil {
+	err := m.repo.DeleteLinkByCode(r.Context(), code)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
 			helper.WriteJson(w,
-				map[string]string{"error": "Ссылка удалена"},
-				http.StatusOK)
+				map[string]string{"error": "Not found link"},
+				http.StatusNotFound)
+			return
 		}
-		helper.WriteJson(w,
-			map[string]string{"error": "Сылка не найдена"},
-			http.StatusNotFound)
 
+		log.Println("error delete link:", err)
+		helper.WriteJson(w,
+			map[string]string{"error": "error delete link"},
+			http.StatusInternalServerError)
 		return
 	}
 
-	delete(m.links, code)
-
-	m.mu.Unlock()
-
-	helper.WriteJson(w,
-		map[string]string{"error": "Ссылка удалена"},
-		http.StatusOK)
-
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (m *Manager) GetAllLinks(w http.ResponseWriter, r *http.Request) {
