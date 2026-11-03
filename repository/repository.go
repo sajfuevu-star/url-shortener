@@ -202,6 +202,10 @@ func (r *LinkRepository) GetAndIncrement(ctx context.Context, code string) (*lin
 	UPDATE links
 	SET clicks = clicks + 1
 	WHERE code = $1
+	   AND (
+	       expires_at IS NULL
+		   OR expires_at > NOW()  
+	   )
 	RETURNING code, original_url, expires_at;
 	`
 

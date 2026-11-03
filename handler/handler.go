@@ -1,12 +1,12 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
-	"sync"
 	"time"
 
 	"url/helper"
@@ -17,15 +17,12 @@ import (
 )
 
 type Manager struct {
-	repo  repository.LinkRepository
-	mu    sync.RWMutex
-	links map[string]*link.Link
+	repo repository.LinkRepository
 }
 
 func NewManager(repository *repository.LinkRepository) *Manager {
 	return &Manager{
-		repo:  *repository,
-		links: make(map[string]*link.Link),
+		repo: *repository,
 	}
 }
 
@@ -81,34 +78,37 @@ func (m *Manager) CreateShortLink(
 
 	request.URL = validURL
 	var code string
-	m.mu.Lock()
 
 	if request.Alias != "" {
 		alias, err := helper.ValidateAlias(request.Alias)
 		if err != nil {
-			m.mu.Unlock()
 
-			log.Println("Не корректный alias:", err)
+			helper.WriteJson(w,
+				map[string]string{"error": err.Error()},
+				http.StatusBadRequest)
 
-			helper.WriteJson(w, map[string]string{"error": err.Error()}, http.StatusBadRequest)
 			return
 		}
-		_, exists := m.links[alias]
-		if exists {
-			m.mu.Unlock()
+		_, err = m.repo.GetByCode(r.Context(), alias)
+		if err == nil {
 
-			log.Println("Alias уже занят")
+			helper.WriteJson(w,
+				map[string]string{"error": "alias уже занят"},
+				http.StatusConflict)
 
-			helper.WriteJson(w, map[string]string{"error": "alias уже занят"}, http.StatusConflict)
 			return
 		}
+
 		code = alias
 	} else {
-		generateCode, err := GenerationUniqueCode(m)
+		generateCode, err := GenerationUniqueCode(m, r.Context())
 		if err != nil {
-			m.mu.Unlock()
+
 			log.Println("Не удалось сгенерировать код", err)
-			helper.WriteJson(w, map[string]string{"error": "Не удалось сгенерировать код"}, http.StatusInternalServerError)
+			helper.WriteJson(w,
+				map[string]string{"error": "Не удалось сгенерировать код"},
+				http.StatusInternalServerError)
+
 			return
 		}
 
@@ -128,7 +128,6 @@ func (m *Manager) CreateShortLink(
 		if errors.Is(err, repository.ErrCodeTaken) {
 
 			if request.Alias != "" {
-				m.mu.Unlock()
 
 				helper.WriteJson(w,
 					map[string]string{
@@ -140,11 +139,9 @@ func (m *Manager) CreateShortLink(
 
 			for attempt := 0; attempt < 3; attempt++ {
 
-				code, err := GenerationUniqueCode(m)
+				code, err := GenerationUniqueCode(m, r.Context())
 
 				if err != nil {
-
-					m.mu.Unlock()
 
 					log.Println(err)
 
@@ -165,7 +162,6 @@ func (m *Manager) CreateShortLink(
 					}
 
 					log.Println("Не удалось создать ссылку:", err)
-					m.mu.Unlock()
 
 					helper.WriteJson(w, map[string]string{
 						"error": "не удалось добавить ссылку в базу данных"},
@@ -174,29 +170,23 @@ func (m *Manager) CreateShortLink(
 					return
 				}
 
-				m.links[code] = newLink
-
 				response := map[string]string{
 					"short_url": "http://localhost:8080/r/" + code,
 				}
 
 				helper.WriteJson(w, response, http.StatusCreated)
 
-				m.mu.Unlock()
 				return
 			}
 			helper.WriteJson(w,
 				map[string]string{"error": "Не удалось создать короткую ссылку"},
 				http.StatusInternalServerError)
 
-			m.mu.Unlock()
 			return
 
 		}
 
 		log.Println("Не удалось создать ссылку:", err)
-
-		m.mu.Unlock()
 
 		helper.WriteJson(w, map[string]string{
 			"error": "не удалось добавить ссылку в базу данных"},
@@ -204,10 +194,6 @@ func (m *Manager) CreateShortLink(
 
 		return
 	}
-
-	m.links[code] = newLink
-
-	m.mu.Unlock()
 
 	response := map[string]string{
 		"short_url": "http://localhost:8080/r/" + code,
@@ -225,12 +211,43 @@ func (m *Manager) Redirect(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 
+			result, err := m.repo.GetByCode(r.Context(), code)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+
+					helper.WriteJson(w,
+						map[string]string{"error": "Ссылка не найдена"},
+						http.StatusNotFound)
+
+					return
+				}
+
+				log.Printf("Не удалось получить ссылку с кодом %q: %v", code, err)
+
+				helper.WriteJson(w,
+					map[string]string{"error": "Не удалось поулчить ссылку"},
+					http.StatusInternalServerError)
+
+				return
+			}
+
+			if result.ExpiresAt != nil &&
+				!time.Now().Before(*result.ExpiresAt) {
+
+				helper.WriteJson(w,
+					map[string]string{"error": "Срок действия ссылки истек"},
+					http.StatusGone)
+
+				return
+			}
+
+			log.Printf("Сылка %q существует, но GetAndIncrement не обновил ее", code)
+
 			helper.WriteJson(w,
-				map[string]string{"error": "Ссылка не найдена"},
-				http.StatusNotFound)
+				map[string]string{"error": "Не удалось обработать переход"},
+				http.StatusInternalServerError)
 
 			return
-
 		}
 
 		log.Printf("Не удалось получить ссылку с кодом %q: %v", code, err)
@@ -242,29 +259,19 @@ func (m *Manager) Redirect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if newLink.ExpiresAt != nil &&
-		time.Now().After(*newLink.ExpiresAt) {
-
-		helper.WriteJson(w,
-			map[string]string{"error": "Срок дейсвтия ссылки истек"},
-			http.StatusGone)
-
-		return
-	}
-
 	originalURL := newLink.OriginalURL
 
 	http.Redirect(w, r, originalURL, http.StatusFound)
 }
 
-func GenerationUniqueCode(m *Manager) (string, error) {
+func GenerationUniqueCode(m *Manager, ctx context.Context) (string, error) {
 	for attempt := 0; attempt < 10; attempt++ {
 		code, err := helper.GenerationCode(6)
 		if err != nil {
 			return "", err
 		}
-		_, exists := m.links[code]
-		if !exists {
+		_, err = m.repo.GetByCode(ctx, code)
+		if err != nil {
 			return code, nil
 		}
 	}
@@ -275,24 +282,25 @@ func GenerationUniqueCode(m *Manager) (string, error) {
 func (m *Manager) GetStats(w http.ResponseWriter, r *http.Request) {
 	code := r.PathValue("code")
 
-	m.mu.RLock()
-	statlink, ok := m.links[code]
-	if !ok {
-		m.mu.RUnlock()
+	stats, err := m.repo.GetByCode(r.Context(), code)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
 
-		stats, err := m.repo.GetByCode(r.Context(), code)
-		if err == nil {
-			helper.WriteJson(w, stats, http.StatusOK)
+			helper.WriteJson(w,
+				map[string]string{"error": "Ссылка не найдена"},
+				http.StatusNotFound)
+
 			return
 		}
-		log.Println("Не найден код")
-		helper.WriteJson(w, map[string]string{"error": "Не найден код"}, http.StatusNotFound)
+
+		log.Printf("Не удалось получить ссылку с кодом %q: %v", code, err)
+
+		helper.WriteJson(w,
+			map[string]string{"error": "Не удалось получить ссылку"},
+			http.StatusNotFound)
+
 		return
 	}
-
-	stats := *statlink
-
-	m.mu.RUnlock()
 
 	helper.WriteJson(w, stats, http.StatusOK)
 
@@ -308,6 +316,7 @@ func (m *Manager) DeleteLink(w http.ResponseWriter, r *http.Request) {
 			helper.WriteJson(w,
 				map[string]string{"error": "Not found link"},
 				http.StatusNotFound)
+
 			return
 		}
 
@@ -315,6 +324,7 @@ func (m *Manager) DeleteLink(w http.ResponseWriter, r *http.Request) {
 		helper.WriteJson(w,
 			map[string]string{"error": "error delete link"},
 			http.StatusInternalServerError)
+
 		return
 	}
 
