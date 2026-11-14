@@ -15,6 +15,16 @@ var ErrNotFound = errors.New("link not found")
 var ErrCodeTaken = errors.New("code already taken")
 var ErrAliasTaken = errors.New("alias already taken")
 
+var _ ManagerRepository = (*LinkRepository)(nil)
+
+type ManagerRepository interface {
+	Create(ctx context.Context, link *link.Link) error
+	GetByCode(ctx context.Context, code string) (*link.Link, error)
+	DeleteLinkByCode(ctx context.Context, code string) error
+	GetAllLinks(ctx context.Context) ([]link.Link, error)
+	GetAndIncrement(ctx context.Context, code string) (*link.Link, error)
+}
+
 type LinkRepository struct {
 	db *pgxpool.Pool
 }
@@ -148,7 +158,7 @@ func (r LinkRepository) UpdateLink(ctx context.Context, code string) error {
 	return nil
 }
 
-func (r *LinkRepository) GetAllLInks(ctx context.Context) ([]link.Link, error) {
+func (r *LinkRepository) GetAllLinks(ctx context.Context) ([]link.Link, error) {
 
 	query := `
 	SELECT 

@@ -3,6 +3,7 @@ package helper
 import (
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
@@ -11,6 +12,9 @@ import (
 	"strings"
 	"unicode"
 )
+
+var ErrAliasInvalidChar = errors.New("the alias contains invalid characters")
+var ErrAliasLen = errors.New("An alias must contain a minimum of 3 characters and a maximum of 30")
 
 const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
@@ -35,7 +39,7 @@ func GenerationCode(lenght int) (string, error) {
 			big.NewInt(int64(len(alphabet))),
 		)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("Не удалось сгенерировать код %w", err)
 		}
 
 		code[i] = alphabet[randomIndex.Int64()]
@@ -66,26 +70,25 @@ func ValidateURL(rawURL string) (string, error) {
 	return rawURL, nil
 }
 
-
 func ValidateAlias(alias string) (string, error) {
 	alias = strings.TrimSpace(alias)
 
 	if len(alias) < 3 {
-		return "", fmt.Errorf("alias должен быть минимум 3 символа")
+		return "", fmt.Errorf("alias должен быть минимум 3 символа %w", ErrAliasLen)
 	}
 
 	if len(alias) > 30 {
-		return "", fmt.Errorf("alias должен быть не более 30 символов")
+		return "", fmt.Errorf("alias должен быть не более 30 символов %w", ErrAliasLen)
 	}
 
 	for _, char := range alias {
 		if !unicode.IsLetter(char) &&
-		    !unicode.IsDigit(char) &&
+			!unicode.IsDigit(char) &&
 			char != '-' &&
 			char != '_' {
-				return "", fmt.Errorf("alias содердит недопустимые символы")
-			}
+			return "", fmt.Errorf("alias содердит недопустимые символы %w", ErrAliasInvalidChar)
+		}
 	}
-	
+
 	return alias, nil
 }

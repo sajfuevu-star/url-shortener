@@ -1,10 +1,8 @@
 package handler
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -17,12 +15,12 @@ import (
 )
 
 type Manager struct {
-	repo repository.LinkRepository
+	repo repository.ManagerRepository
 }
 
-func NewManager(repository *repository.LinkRepository) *Manager {
+func NewManager(repository repository.ManagerRepository) *Manager {
 	return &Manager{
-		repo: *repository,
+		repo: repository,
 	}
 }
 
@@ -45,7 +43,7 @@ func (m *Manager) CreateShortLink(
 
 	validURL, err := helper.ValidateURL(request.URL)
 	if err != nil {
-		log.Println("Не корректный URL", err)
+		log.Println("Error:", err)
 		helper.WriteJson(w, map[string]string{"error": "Не корректный URL"}, http.StatusBadRequest)
 		return
 	}
@@ -82,39 +80,49 @@ func (m *Manager) CreateShortLink(
 	if request.Alias != "" {
 		alias, err := helper.ValidateAlias(request.Alias)
 		if err != nil {
+			if errors.Is(err, helper.ErrAliasInvalidChar) {
+
+				helper.WriteJson(w,
+					map[string]string{"error": "Алисас содержит не допустимые символы"},
+					http.StatusBadRequest)
+
+				return
+			}
+
+			if errors.Is(err, helper.ErrAliasLen) {
+
+				helper.WriteJson(w,
+					map[string]string{"error": "Длина алиаса должна быть от 3 до 30 символов"},
+					http.StatusBadRequest)
+
+				return
+			}
+
+			log.Printf("Ошибка валидации алиаса %q", err)
 
 			helper.WriteJson(w,
-				map[string]string{"error": err.Error()},
-				http.StatusBadRequest)
-
-			return
-		}
-		_, err = m.repo.GetByCode(r.Context(), alias)
-		if err == nil {
-
-			helper.WriteJson(w,
-				map[string]string{"error": "alias уже занят"},
-				http.StatusConflict)
+				map[string]string{"error": "ошибка валидации алиаса попробуйте снова"},
+				http.StatusInternalServerError)
 
 			return
 		}
 
 		code = alias
 	} else {
-		generateCode, err := GenerationUniqueCode(m, r.Context())
+		generationCode, err := helper.GenerationCode(6)
 		if err != nil {
+			log.Printf("Не удлось сгенерировать код %q", err)
 
-			log.Println("Не удалось сгенерировать код", err)
 			helper.WriteJson(w,
-				map[string]string{"error": "Не удалось сгенерировать код"},
+				map[string]string{"error": "Не удалось сгенерировать код, попробуйте снова"},
 				http.StatusInternalServerError)
 
 			return
 		}
 
-		code = generateCode
-
+		code = generationCode
 	}
+
 	newLink := &link.Link{
 		Code:        code,
 		OriginalURL: request.URL,
@@ -122,85 +130,56 @@ func (m *Manager) CreateShortLink(
 		ExpiresAt:   expiresAt,
 	}
 
-	err = m.repo.Create(r.Context(), newLink)
-	if err != nil {
-
-		if errors.Is(err, repository.ErrCodeTaken) {
-
-			if request.Alias != "" {
-
-				helper.WriteJson(w,
-					map[string]string{
-						"error": "Алиас уже занят",
-					},
-					http.StatusConflict)
-				return
-			}
-
-			for attempt := 0; attempt < 3; attempt++ {
-
-				code, err := GenerationUniqueCode(m, r.Context())
-
-				if err != nil {
-
-					log.Println(err)
+	for attempt := 0; attempt < 4; attempt++ {
+		err = m.repo.Create(r.Context(), newLink)
+		if err != nil {
+			if errors.Is(err, repository.ErrCodeTaken) {
+				if request.Alias != "" {
 
 					helper.WriteJson(w,
-						map[string]string{
-							"error": "Не удалось сгенерировать код",
-						}, http.StatusInternalServerError)
+						map[string]string{"error": "Алиас уже занят"},
+						http.StatusConflict)
 
 					return
-				}
+				} else {
+					generationCode, err := helper.GenerationCode(6)
+					if err != nil {
+						log.Printf("Не удлось сгенерировать код %q", err)
 
-				newLink.Code = code
+						helper.WriteJson(w,
+							map[string]string{"error": "Не удалось сгенерировать код, попробуйте снова"},
+							http.StatusInternalServerError)
 
-				err = m.repo.Create(r.Context(), newLink)
-				if err != nil {
-					if errors.Is(err, repository.ErrCodeTaken) {
-						continue
+						return
 					}
-
-					log.Println("Не удалось создать ссылку:", err)
-
-					helper.WriteJson(w, map[string]string{
-						"error": "не удалось добавить ссылку в базу данных"},
-						http.StatusInternalServerError)
-
-					return
+					newLink.Code = generationCode
+					continue
 				}
-
-				response := map[string]string{
-					"short_url": "http://localhost:8080/r/" + code,
-				}
-
-				helper.WriteJson(w, response, http.StatusCreated)
-
-				return
 			}
+
+			log.Printf("Не удалось добавить сслыку в базу %q", err)
+
 			helper.WriteJson(w,
-				map[string]string{"error": "Не удалось создать короткую ссылку"},
+				map[string]string{"error": "Не удалось создать сслыку"},
 				http.StatusInternalServerError)
 
 			return
-
 		}
 
-		log.Println("Не удалось создать ссылку:", err)
+		response := map[string]string{
+			"short_url": "http://localhost:8080/r/" + newLink.Code,
+		}
 
-		helper.WriteJson(w, map[string]string{
-			"error": "не удалось добавить ссылку в базу данных"},
-			http.StatusInternalServerError)
+		helper.WriteJson(w, response, http.StatusCreated)
 
 		return
 	}
 
-	response := map[string]string{
-		"short_url": "http://localhost:8080/r/" + code,
-	}
+	log.Printf("Не удалось добавить сслыку в базу %q", err)
 
-	helper.WriteJson(w, response, http.StatusCreated)
-
+	helper.WriteJson(w,
+		map[string]string{"error": "Не удалось создать сслыку"},
+		http.StatusInternalServerError)
 }
 
 func (m *Manager) Redirect(w http.ResponseWriter, r *http.Request) {
@@ -264,21 +243,6 @@ func (m *Manager) Redirect(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, originalURL, http.StatusFound)
 }
 
-func GenerationUniqueCode(m *Manager, ctx context.Context) (string, error) {
-	for attempt := 0; attempt < 10; attempt++ {
-		code, err := helper.GenerationCode(6)
-		if err != nil {
-			return "", err
-		}
-		_, err = m.repo.GetByCode(ctx, code)
-		if err != nil {
-			return code, nil
-		}
-	}
-
-	return "", fmt.Errorf("не удалось создать код")
-}
-
 func (m *Manager) GetStats(w http.ResponseWriter, r *http.Request) {
 	code := r.PathValue("code")
 
@@ -297,7 +261,7 @@ func (m *Manager) GetStats(w http.ResponseWriter, r *http.Request) {
 
 		helper.WriteJson(w,
 			map[string]string{"error": "Не удалось получить ссылку"},
-			http.StatusNotFound)
+			http.StatusInternalServerError)
 
 		return
 	}
@@ -333,10 +297,12 @@ func (m *Manager) DeleteLink(w http.ResponseWriter, r *http.Request) {
 
 func (m *Manager) GetAllLinks(w http.ResponseWriter, r *http.Request) {
 
-	links, err := m.repo.GetAllLInks(r.Context())
+	links, err := m.repo.GetAllLinks(r.Context())
 	if err != nil {
 		log.Println("Ошибка:", err)
-		helper.WriteJson(w, map[string]string{"error": "Не удалось пполучить ссылки"}, http.StatusBadRequest)
+		helper.WriteJson(w,
+			map[string]string{"error": "Не удалось пполучить ссылки"},
+			http.StatusInternalServerError)
 		return
 	}
 
